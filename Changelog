@@ -1,5 +1,23 @@
 
 
+0.02
+----
+
+New constructor option: "imagebufferdir" allows to set up a user defined name for the image
+buffer directory, which can be relative or absolute.
+
+Added handling of external images.
+
+Bugfix: $docDate value was title, not date.
+	
+Checking if an image URL host is available befoe trying to load an external image,
+via Net::Ping.
+
+New user defined field support "authormail".
+
+Deactivated $docDate setting as it is difficult to handle with changing locales, suspended
+till all the variables can be set by options.
+
 
 0.01
 ----

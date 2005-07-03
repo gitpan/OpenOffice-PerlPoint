@@ -4,8 +4,19 @@
 # ---------------------------------------------------------------------------------------
 # version | date     | author   | changes
 # ---------------------------------------------------------------------------------------
-# 0.01    |19.06.2005| JSTENZEL | First version, derived from a oo2pod example in
-#         |          |          | OpenOffice::OODoc 1.309.
+# 0.02    |29.06.2005| JSTENZEL | new constructor option: imagebufferdir allows to set
+#         |          |          | up a user defined name for the image buffer directory,
+#         |          |          | which can be relative or absolute;
+#         |          | JSTENZEL | added handling of external images;
+#         |02.07.2005| JSTENZEL | bugfix: $docDate value was title, not date;
+#         |          | JSTENZEL | checking if an image URL host is available, via Net::Ping;
+#         |          | JSTENZEL | new user defined field support: authormail;
+#         |03.07.2005| JSTENZEL | deactivated $docDate setting as it is difficult to handle
+#         |          |          | with changing locales, suspended till all the variables
+#         |          |          | can be set by options;
+# 0.01    |19.06.2005| JSTENZEL | First version, parts derived or inspired from/by an
+#         |          |          | oo2pod example in OpenOffice::OODoc 1.309 and modules
+#         |          |          | in the OpenOffice::OODoc 2.00 distribution.
 # ---------------------------------------------------------------------------------------
 
 # = POD SECTION =========================================================================
@@ -16,7 +27,7 @@ B<OpenOffice::PerlPoint> - an Open Office / Open Document to PerlPoint converter
 
 =head1 VERSION
 
-This manual describes version B<0.01>.
+This manual describes version B<0.02>.
 
 =head1 SYNOPSIS
 
@@ -55,16 +66,19 @@ Please see the I<NOTES> sections below.
 package OpenOffice::PerlPoint;
 
 # declare version
-$VERSION=0.01;
+$VERSION=0.02;
 
 # pragmata
 use strict;
 
 # load modules
 use Carp;
+use Net::Ping;
 use Text::Wrapper;
 use File::Basename;
+use LWP::UserAgent;
 use OpenOffice::OODoc;
+use POSIX qw(strftime);
 
 # declare attributes
 use fields qw(
@@ -75,6 +89,12 @@ use fields qw(
               docStyles
               content
               notes
+
+              userAgent
+              ping
+
+              imagebufferdir
+              
              );
 
 
@@ -169,12 +189,21 @@ sub new
   # check parameters
   confess "[BUG] Missing class name.\n" unless $class;
   confess "[BUG] Missing file parameter.\n" unless exists $pars{file};
+  confess "[BUG] Missing image buffer directory parameter.\n" unless exists $pars{imagebufferdir};
 
   # build object
   my __PACKAGE__ $me=fields::new($class);
 
-  # store filename
-  $me->{file}=$pars{file};
+  # store configuration
+  $me->{$_}=$pars{$_} for qw(file imagebufferdir);
+
+  # aggregate a user agent object
+  $me->{userAgent}=new LWP::UserAgent;
+  $me->{userAgent}->timeout(1);
+  $me->{userAgent}->env_proxy;
+
+  # and a Net::Ping object
+  $me->{ping}=new Net::Ping;
 
   # build archive object
   $me->{archive}=ooFile($pars{file});
@@ -230,11 +259,11 @@ sub convertMetadata
   confess "[BUG] Object parameter is no ", __PACKAGE__, " object.\n" unless ref $me and ref $me eq __PACKAGE__;
 
   # variables
-  my ($perlpoint, $title, $subject, $description, $author, $date, $version, $generator, $copyright);
+  my ($perlpoint, $title, $subject, $description, $author, $date, $version, $generator, $copyright, $authormail);
 
   # anything to do?
   if ($me->{metadata})
-	{
+    {
      # introductory comment
      $perlpoint=join('', defined $perlpoint ? $perlpoint : "\n", $me->constructComment('-' x 60), "\n", $me->constructComment('set document data'));
 
@@ -258,10 +287,11 @@ sub convertMetadata
      $perlpoint.="\$docAuthor=$author\n\n" if $author;
      $author='unknown' unless $author;
 
-     # date
-     $date=$me->{metadata}->date;
-     $perlpoint.="\$docDate=$title\n\n" if $date;
-     $date='unknown' unless $date;
+     # date (dectivated for now as it is difficult to test with changing locales, should
+     # become optional later)
+     # $date=$me->{metadata}->date;
+     # $date=strftime("%c", localtime(ooTimelocal($date))), $perlpoint.="\$docDate=$date\n\n" if $date;
+     # $date='unknown' unless $date;
 
      # get user defined metadata
      my %userDefinedMetadata=$me->{metadata}->user_defined;
@@ -276,13 +306,17 @@ sub convertMetadata
      $perlpoint.="\$docCopyright=$copyright\n\n" if $copyright;
      $copyright='unknown' unless $copyright;
 
+     # authormail, if available
+     $authormail=$userDefinedMetadata{authormail} if exists $userDefinedMetadata{authormail};
+     $authormail='unknown' unless $authormail;
+
      # complete section
      $perlpoint=join('', $perlpoint, $me->constructComment('-' x 60), "\n");
 
      # get generator
      $generator=$me->{metadata}->generator;
      $generator='unknown program' unless $generator;
-	}
+    }
 
   # add a header comment with description, format, author, version etc.
   $perlpoint=join('', <<EOI, $perlpoint);
@@ -641,22 +675,46 @@ sub traverseElement
            );
                                                       
 
+      # make a buffer directory, if necessary (TODO: make path configurable)
+      mkdir($me->{imagebufferdir}) unless -d $me->{imagebufferdir};
+
       # export internal graphics
       if ($imageLink=~m{^(\#)?Pictures/})
        {
-        # make a buffer directory, if necessary (TODO: make path configurable)
-        my $bufferDir='oo2ppImageBuffer';
-        mkdir($bufferDir) unless -d $bufferDir;
-
         # export image and adapt source link
-        $me->{docContent}->exportImage($item, $imageLink=join('/', $bufferDir, basename($imageLink)));
+        $me->{docContent}->exportImage($item, $imageLink=join('/', $me->{imagebufferdir}, basename($imageLink)));
        }
+
       # import external graphics
-      elsif ($imageLink=~m{^https?://})
+      elsif ($imageLink=~m{^https?://([^/]+)})
        {
-        # coming soon, hopefully
-        return qq(.\\I<CONVERTER NOTE:> Image $imageName not importable from $imageLink yet.);
-       }
+        # try to get the image file
+        warn "[Info] Trying to fetch $imageLink from $1.\n";
+
+        # buffer host name
+        my ($imageHost)=$1;
+        
+        # host reachable?
+        if ($me->{ping}->ping($imageHost, 1))
+         {
+          my $file=$me->{userAgent}->get($imageLink);
+          warn "[Info] Fetched (success: ", $file->is_success, ").\n";
+
+          # success?
+          if ($file->is_success)
+           {
+            # try to store the file locally
+            if (open(my $copy, join('', '>', $imageLink=join('/', $me->{imagebufferdir}, basename($imageLink)))))
+             {print $copy $file->content;}
+            else
+             {return qq(.\\I<CONVERTER NOTE:> Image $imageName not importable: could not open local buffer file $imageLink ($!).);}
+           }
+          else
+           {return qq(.\\I<CONVERTER NOTE:> Image $imageName not importable from $imageHost.);}
+         }
+        else
+         {return qq(.\\I<CONVERTER NOTE:> Image host $imageHost not reachable to get $imageName.);}
+      }
 
       # build a tag and return it (TODDO: generalize)
       return qq(\\IMAGE{alt="$imageName" src="$imageLink"});
@@ -873,12 +931,6 @@ Tables are supported as long as they are not nested.
 
 Images I<embedded into the document> are fully supported.
 
-I<External> images are currently translated into a text paragraph saying
-
-  .\I<CONVERTER NOTE:> Image <image name> not importable from <image link> yet.);
-
-Future versions shall support external image links.
-
 
 =item Comments
 
@@ -945,8 +997,7 @@ TOC ignoration could become configurable.
 
 =item *
 
-Make name of image buffer subdirectory configurable.
-Allow to use an existing, central directory.
+Optionally image file copies stored in a buffer directory should be named generically.
 
 =item *
 

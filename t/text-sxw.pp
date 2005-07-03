@@ -34,8 +34,6 @@ $docSubtitle=Open Office docs transformed.
 
 $docDescription=A short remark.
 
-$docDate=A first test.
-
 // ------------------------------------------------------------
 
 .This is a first document. It starts with a text paragraph that contains so
@@ -94,6 +92,5 @@ Cell 13 || Cell 14-1
 
 =Images
 
-.\IMAGE{alt="Grafik1"
-src="oo2ppImageBuffer/10000000000000640000004B8DCCCFBD.gif"}
+.\IMAGE{alt="Grafik1" src="t/ibd1/10000000000000640000004B8DCCCFBD.gif"}
 
