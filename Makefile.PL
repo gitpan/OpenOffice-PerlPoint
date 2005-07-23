@@ -19,6 +19,9 @@ $ok=WriteMakefile(
                                    # for OpenOffice::PerlPoint
                                    OpenOffice::OODoc => 2.00,
                                    Net::Ping         => 1.00,
+                                   Text::Wrapper     => 1.00,
+                                   Text::Template    => 1.44,
+                                   Storable          => 1.00,
 
                                    # for the tests
                                    Test::Harness     => 1.25,

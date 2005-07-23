@@ -1,5 +1,21 @@
 
 
+0.03
+----
+
+Added Text::Wrapper to the list of prerequisites (detected by CPAN testers, thanks).
+
+The meta data prolog is template driven now, thus allowing individual results.
+
+Reactivated $docDate as now with the template approach it can be excluded from tests.
+
+New constructor option to suppress meta data handling completely.
+
+User defined document data keys now configured via constructor option.
+
+oo2pp() starts result with two newlines now, to guarantee correct detection of the first paragraph.
+	
+
 0.02
 ----
 

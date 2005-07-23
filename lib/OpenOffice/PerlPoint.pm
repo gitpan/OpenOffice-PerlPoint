@@ -4,6 +4,16 @@
 # ---------------------------------------------------------------------------------------
 # version | date     | author   | changes
 # ---------------------------------------------------------------------------------------
+# 0.03    |05.07.2005| JSTENZEL | the meta data prolog is template driven now, thus
+#         |          |          | allowing individual results;
+#         |          | JSTENZEL | reactivated $docDate as now with the template approach
+#         |          |          | it can be excluded from tests;
+#         |          | JSTENZEL | new constructor option to suppress meta data handling
+#         |          |          | completely;
+#         |          | JSTENZEL | user defined document data keys now configured via
+#         |          |          | constructor option;
+#         |10.07.2005| JSTENZEL | oo2pp() starts result with two newlines now, to
+#         |          |          | guarantee correct detection of the first paragraph;
 # 0.02    |29.06.2005| JSTENZEL | new constructor option: imagebufferdir allows to set
 #         |          |          | up a user defined name for the image buffer directory,
 #         |          |          | which can be relative or absolute;
@@ -27,7 +37,7 @@ B<OpenOffice::PerlPoint> - an Open Office / Open Document to PerlPoint converter
 
 =head1 VERSION
 
-This manual describes version B<0.02>.
+This manual describes version B<0.03>.
 
 =head1 SYNOPSIS
 
@@ -66,35 +76,43 @@ Please see the I<NOTES> sections below.
 package OpenOffice::PerlPoint;
 
 # declare version
-$VERSION=0.02;
+$VERSION=0.03;
 
 # pragmata
 use strict;
 
 # load modules
 use Carp;
+use Safe;
+use Storable;
 use Net::Ping;
 use Text::Wrapper;
 use File::Basename;
 use LWP::UserAgent;
-use OpenOffice::OODoc;
+use Text::Template;
 use POSIX qw(strftime);
+use OpenOffice::OODoc 2.00;
 
 # declare attributes
 use fields qw(
               file
               archive
+
               metadata
               docContent
               docStyles
               content
               notes
 
+              metaData
+
               userAgent
               ping
 
+              skipmetadata
               imagebufferdir
-              
+              metadataTemplate
+              userdefinedDocdata
              );
 
 
@@ -167,6 +185,95 @@ to call a constructor.
 
 The (absolute or relative) path to the Office document that should be converted.
 
+=item imagebufferdir
+
+OO document images refer to images stored within the document or located externally at
+a location that is specified by an URL. Both image sources cannot be accessed by PerlPoint,
+so the converter makes copies from those sources and refers to I<them>. The C<imagebufferdir>
+option specifies where these intermediate copies should be stored. The directory is made
+unless it already exists.
+
+A I<relative> path will result in a directory relative to the document. An I<absolute> path
+is suitable if images from various documents should be collected in one place, or if the
+resulting PerlPoint document should be written to a special path.
+
+
+=item metadataTemplate
+
+A template to include document meta data to the transformation result. The template is
+expected to be in C<Text::Template> format, in a safe compartment.
+
+These data are available:
+
+=over 4
+
+=item %metadata
+
+A hash of all document meta data. The keys of this hash are the following, while the
+values hold the document data assigned to that keys.
+
+=over 4
+    
+=item title
+
+document title
+
+=item subject
+
+document subject
+
+=item description
+
+document description
+
+=item creator
+
+document author
+
+=item date
+
+last modification
+
+=item keywords
+
+keywords describing the document
+
+=item User defined fields
+
+All names defined by C<userdefinedDocdata>.
+
+=back
+
+=item %tools
+
+Keys: C<generator> holds the name of the program that wrote the OO document.
+C<converter> holds the name of the converter, usually the name of this module.
+
+=item $source
+
+Source name, usually the name set by option C<file>.
+
+=back
+
+This option has no effect if C<skipmetadata> is set.
+
+
+=item skipmetadata
+
+If set to a true value meta data processing is bypassed.
+
+
+=item userdefinedDocdata
+
+Each OO document can be described by various predefined data, which are set automatically
+(like the modification date) or set up by the document author in a dialog (like the
+documents title). Additionally, OO allows to define up to four user informations. Called
+C<info1> to I<info4> by default, they can be named individually if required.
+
+This option expects a reference to an array of names for those user defined document data entries.
+The names can be used in templates passed in via option C<metadataTemplate> to access the data
+stored in the related document fields.
+
 =back
 
 B<Returns:> the new object.
@@ -195,7 +302,13 @@ sub new
   my __PACKAGE__ $me=fields::new($class);
 
   # store configuration
-  $me->{$_}=$pars{$_} for qw(file imagebufferdir);
+  $me->{$_}=$pars{$_} for qw(
+                             file
+                             imagebufferdir
+                             skipmetadata
+                             metadataTemplate
+                             userdefinedDocdata
+                            );
 
   # aggregate a user agent object
   $me->{userAgent}=new LWP::UserAgent;
@@ -264,89 +377,53 @@ sub convertMetadata
   # anything to do?
   if ($me->{metadata})
     {
-     # introductory comment
-     $perlpoint=join('', defined $perlpoint ? $perlpoint : "\n", $me->constructComment('-' x 60), "\n", $me->constructComment('set document data'));
+     # predefined meta data: title, subject, description, author
+     $me->{metaData}{$_}=$me->{metadata}->$_ || 'unknown' for qw(
+                                                                 creator
+                                                                 date
+                                                                 description
+                                                                 keywords
+                                                                 subject
+                                                                 title
+                                                                );
 
-     # title
-     $title=$me->{metadata}->title;
-     $perlpoint.="\$docTitle=$title\n\n" if $title;
-     $title='unknown' unless $title;
-
-     # subject
-     $subject=$me->{metadata}->subject;
-     $perlpoint.="\$docSubtitle=$subject\n\n" if $subject;
-     $subject='unknown' unless $subject;
-
-     # description
-     $description=$me->{metadata}->description;
-     $perlpoint.="\$docDescription=$description\n\n" if $description;
-     $description='unknown' unless $description;
-
-     # author
-     $author=$me->{metadata}->creator;
-     $perlpoint.="\$docAuthor=$author\n\n" if $author;
-     $author='unknown' unless $author;
-
-     # date (dectivated for now as it is difficult to test with changing locales, should
-     # become optional later)
-     # $date=$me->{metadata}->date;
-     # $date=strftime("%c", localtime(ooTimelocal($date))), $perlpoint.="\$docDate=$date\n\n" if $date;
-     # $date='unknown' unless $date;
-
-     # get user defined metadata
+     # get user defined metadata, as set up by caller
      my %userDefinedMetadata=$me->{metadata}->user_defined;
-
-     # version, if available
-     $version=$userDefinedMetadata{version} if exists $userDefinedMetadata{version};
-     $perlpoint.="\$docVersion=$version\n\n" if $version;
-     $version='unknown' unless $version;
-
-     # copyright, if available
-     $copyright=$userDefinedMetadata{copyright} if exists $userDefinedMetadata{copyright};
-     $perlpoint.="\$docCopyright=$copyright\n\n" if $copyright;
-     $copyright='unknown' unless $copyright;
-
-     # authormail, if available
-     $authormail=$userDefinedMetadata{authormail} if exists $userDefinedMetadata{authormail};
-     $authormail='unknown' unless $authormail;
-
-     # complete section
-     $perlpoint=join('', $perlpoint, $me->constructComment('-' x 60), "\n");
+     $me->{metaData}{$_}=$userDefinedMetadata{$_} || 'unknown' for @{$me->{userdefinedDocdata}};
 
      # get generator
      $generator=$me->{metadata}->generator;
      $generator='unknown program' unless $generator;
     }
 
-  # add a header comment with description, format, author, version etc.
-  $perlpoint=join('', <<EOI, $perlpoint);
+  # process meta data, if configured
+  if (defined $me->{metadataTemplate})
+   {
+    # build safe environment
+    my $safe=new Safe;
 
-// document description, packed into a condition for readability
-? 0
+    # clone meta data into a transfer variable
+    my %transfer=(
+                  # meta data
+                  metaData => $me->{metaData} ? Storable::dclone($me->{metaData}) : {},
 
- Description: $description
+                  # generator and converter
+                  tools    => {
+                               generator => $generator,
+                               converter => __PACKAGE__,
+                              },
 
- Format:      This file is written in PerlPoint (www.sf.net/projects/perlpoint).
-              It can be translated into several documents and formats, see the
-              PerlPoint documentation for details.
+                  # more data
+                  source   => $me->{file},
+                 );
 
-              The original source of this document was stored by
-              $generator.
-
-              It was converted into PerlPoint by ${\(__PACKAGE__)}.
-
- Source:      $me->{file}.
-
- Author:      $author
-
- Copyright:   $copyright
-
- Version:     $version
-
-// start document
-? 1
-
-EOI
+    # build a template object, process the template and add the result
+    # (template bugs stop the program immediately - as they are considered bugs, not (user) errors)
+    my $template=new Text::Template(TYPE => 'STRING', SOURCE => $me->{metadataTemplate})
+        or die "[BUG] Couldn't construct template: $Text::Template::ERROR\n";
+    $perlpoint.=$template->fill_in(SAFE => $safe, HASH => \%transfer)
+        or die "[BUG] Couldn't process template: $Text::Template::ERROR\n";
+   }
 
   # supply result
   $perlpoint;
@@ -355,7 +432,7 @@ EOI
 
 #-----------------------------------------------------------------------------
 
-# convert completely (TODO: make certain steps like meta data conversion optional)
+# convert completely
 =pod
 
 =head2 oo2pp()
@@ -390,8 +467,8 @@ sub oo2pp
   # variables
   my ($perlpoint);
 
-  # meta data
-  $perlpoint.=$me->convertMetadata;
+  # meta data, unless suppressed
+  $perlpoint.=$me->convertMetadata unless $me->{skipmetadata};
 
   # content
   $perlpoint.=$me->convertContent;
@@ -543,6 +620,8 @@ sub buildContent
     my $styleObject=$me->{docContent}->getStyleElement($styleName) || $me->{docStyles}->getStyleElement($styleName);
     my %attributes=$me->{docContent}->getStyleAttributes($styleObject);
 
+#    use Data::Dumper; warn Dumper \%attributes;
+
     # set paragraph prefix
     if (
             exists $attributes{references}{'style:family'}
@@ -577,7 +656,7 @@ sub buildContent
 #-----------------------------------------------------------------------------
 
 # convert content
-sub	convertContent
+sub convertContent
  {
   # get and check parameters
   my ($me)=@_;
@@ -585,7 +664,7 @@ sub	convertContent
   confess "[BUG] Object parameter is no ", __PACKAGE__, " object.\n" unless ref $me and ref $me eq __PACKAGE__;
 
   # variables
-  my ($perlpoint)=('');
+  my ($perlpoint)=("\n\n");
 
   # handle all elements
   foreach my $element (@{$me->{content}})
@@ -656,6 +735,7 @@ sub traverseElement
     my $styleObject=$me->{docContent}->getStyleElement($styleName) || $me->{docStyles}->getStyleElement($styleName);
     my %attributes=(defined $me->{docContent}->getStyle($item)) ? $me->{docContent}->getStyleAttributes($styleObject) : ();
 
+#    use Data::Dumper; warn Dumper \%attributes;
 
     # special case: image
     if ($item->isImage)
@@ -954,6 +1034,12 @@ be transformed at this time.
 
 ... is invalid yet. Current results will not pass a PerlPoint converter.
 
+
+=item OASIS OpenDocument
+
+is not fully supported at the moment due to the beta status of both Open Office 2.0 and
+C<OpenOffice::OODoc>. As both tools are well supported this is just a matter of time.
+
 =back
 
 
@@ -978,14 +1064,6 @@ Jean-Marie Gouarné for the module and his helpful support with many questions.
 =head1 TODO
 
 =over 4
-
-=item *
-
-Make document variable names configurable.
-
-=item *
-
-Make certain steps like meta data conversion optional.
 
 =item *
 

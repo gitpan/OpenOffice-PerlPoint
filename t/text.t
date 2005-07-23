@@ -22,12 +22,59 @@ use OpenOffice::PerlPoint;
 use Test::More qw(no_plan);
 
 
+
+# define a meta data template
+my $template=<<'EOT';
+
+// document description, packed into a condition for readability
+? 0
+
+ Description: {$metaData{description}}
+
+ Format:      This file is written in PerlPoint (www.sf.net/projects/perlpoint).
+              It can be translated into several documents and formats, see the
+              PerlPoint documentation for details.
+
+              The original source of this document was stored by
+              {$tools{generator}}.
+
+              It was converted into PerlPoint by {$tools{converter}}.
+
+ Source:      {$source}.
+
+ Author:      {$metaData{author}}
+
+ Copyright:   {$metaData{copyright}}
+
+ Version:     {$metaData{version}}
+
+// start document
+? 1
+
+
+// ------------------------------------------------------------
+
+// set document data
+$docTitle={$metaData{title}}
+
+$docSubtitle={$metaData{subject}}
+
+$docDescription={$metaData{description}}
+
+// ------------------------------------------------------------
+
+EOT
+
+
+
 # Open Office 1.0 format
 {
  # build a converter object
  my $oo2pp=new OpenOffice::PerlPoint(
-                                     file           => 't/text.sxw',
-                                     imagebufferdir => 't/ibd1',
+                                     file               => 't/text.sxw',
+                                     imagebufferdir     => 't/ibd1',
+                                     metadataTemplate   => $template,
+                                     userdefinedDocdata => [qw(author copyright version)],
                                     );
 
  # convert document
@@ -46,6 +93,8 @@ use Test::More qw(no_plan);
  my $oo2pp=new OpenOffice::PerlPoint(
                                      file => 't/text.odt',
                                      imagebufferdir => 't/ibd2',
+                                     metadataTemplate   => $template,
+                                     userdefinedDocdata => [qw(author copyright version)],
                                     );
 
  # convert document
